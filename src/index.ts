@@ -1,8 +1,9 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { createClient } from '@supabase/supabase-js';
 import * as dotenv from 'dotenv';
+import express from 'express';
 
 dotenv.config();
 
@@ -147,13 +148,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   throw new Error(`Tool not found: ${name}`);
 });
 
-async function run() {
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  console.error('Sidekicks MCP Server running on stdio');
-}
+const app = express();
+app.use(express.json());
 
-run().catch((error) => {
-  console.error(error);
-  process.exit(1);
+let transport: SSEServerTransport;
+
+// Endpoint for Pickaxe to initiate the SSE connection
+app.get('/sse', async (req, res) => {
+  transport = new SSEServerTransport('/message', res);
+  await server.connect(transport);
+});
+
+// Endpoint for Pickaxe to send tool execution POST requests
+app.post('/message', async (req, res) => {
+  if (transport) {
+    await transport.handlePostMessage(req, res);
+  } else {
+    res.status(500).send('SSE transport not initialized');
+  }
+});
+
+const port = process.env.PORT || 3000;
+app.listen(port, () => {
+  console.log(`Sidekicks MCP Server listening for HTTP SSE connections on port ${port}`);
 });
