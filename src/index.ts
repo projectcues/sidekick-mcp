@@ -84,7 +84,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { data, error } = await supabase
       .from('documents')
       .select('*')
-      .textSearch('title', args.query as string);
+      .textSearch('title', args.query as string, { type: 'websearch' });
 
     if (error) {
       throw new Error(`Search failed: ${error.message}`);
@@ -98,10 +98,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   if (name === 'save_note') {
     const { title, content, sourceType } = args;
 
+    const { data: { user }, error: userAuthError } = await supabase.auth.getUser();
+    if (userAuthError || !user) {
+      throw new Error(`Unauthorized: ${userAuthError?.message || 'User not found'}`);
+    }
+
     // First insert the document
     const { data: docData, error: docError } = await supabase
       .from('documents')
       .insert({
+        user_id: user.id,
         title,
         source_type: sourceType,
       })
@@ -117,6 +123,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       .from('document_chunks')
       .insert({
         document_id: docData.id,
+        user_id: user.id,
         content,
         chunk_index: 0,
       });
