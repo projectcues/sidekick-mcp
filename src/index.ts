@@ -149,23 +149,32 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 });
 
 const app = express();
-app.use(express.json());
 
-let transport: SSEServerTransport;
+const transports = new Map<string, SSEServerTransport>();
 
 // Endpoint for Pickaxe to initiate the SSE connection
 app.get('/sse', async (req, res) => {
-  transport = new SSEServerTransport('/message', res);
+  const transport = new SSEServerTransport('/message', res);
+  transports.set(transport.sessionId, transport);
+  
+  res.on('close', () => {
+    transports.delete(transport.sessionId);
+  });
+
   await server.connect(transport);
 });
 
 // Endpoint for Pickaxe to send tool execution POST requests
 app.post('/message', async (req, res) => {
-  if (transport) {
-    await transport.handlePostMessage(req, res);
-  } else {
-    res.status(500).send('SSE transport not initialized');
+  const sessionId = req.query.sessionId as string;
+  const transport = transports.get(sessionId);
+  
+  if (!transport) {
+    res.status(404).send('Session not found');
+    return;
   }
+  
+  await transport.handlePostMessage(req, res);
 });
 
 const port = process.env.PORT || 3000;
