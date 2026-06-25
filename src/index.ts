@@ -16,7 +16,7 @@ const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || '';
 
 const server = new Server(
   {
-    name: 'sidekick-mcp',
+    name: 'sidekicks-mcp',
     version: '1.0.0',
   },
   {
@@ -126,7 +126,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     return {
-      content: [{ type: 'text', text: `Successfully saved "${title}" to Sidekick.` }],
+      content: [{ type: 'text', text: `Successfully saved "${title}" to Sidekicks.` }],
     };
   }
 
@@ -136,7 +136,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 async function run() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error('Sidekick MCP Server running on stdio');
+  console.error('Sidekicks MCP Server running on stdio');
 }
 
 run().catch((error) => {
