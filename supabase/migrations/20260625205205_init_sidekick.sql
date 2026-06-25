@@ -68,7 +68,7 @@ on public.document_chunks for delete
 using (auth.uid() = user_id);
 
 -- Function to match documents based on vector similarity and user isolation
-create or function public.match_document_chunks (
+create or replace function public.match_document_chunks (
   query_embedding vector(1536),
   match_count int default 10,
   filter jsonb default '{}'::jsonb
