@@ -9,14 +9,6 @@ dotenv.config();
 
 const supabaseUrl = process.env.SUPABASE_URL || '';
 const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || '';
-const openaiApiKey = process.env.OPENAI_API_KEY || '';
-
-const openai = new OpenAI({ apiKey: openaiApiKey });
-
-// The server expects Pickaxe to pass a valid Supabase Auth Token via the tool arguments
-// Or it could accept a session token in a custom header if running over HTTP.
-// Since MCP typically runs via Stdio or SSE, we'll require the token in the tool arguments for isolation.
-// Alternatively, if this server runs securely behind an API, the token could be provided in environment variables per execution.
 
 const server = new Server(
   {
@@ -39,10 +31,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         inputSchema: {
           type: 'object',
           properties: {
-            query: { type: 'string', description: 'The search query or embedding string.' },
+            query: { type: 'string', description: 'The search query.' },
             userToken: { type: 'string', description: 'The Supabase JWT access token for the user.' },
+            openAiApiKey: { type: 'string', description: 'The OpenAI API key to use for generating embeddings.' },
           },
-          required: ['query', 'userToken'],
+          required: ['query', 'userToken', 'openAiApiKey'],
         },
       },
       {
@@ -55,8 +48,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             content: { type: 'string' },
             sourceType: { type: 'string', enum: ['note', 'web', 'pdf', 'notion'] },
             userToken: { type: 'string', description: 'The Supabase JWT access token for the user.' },
+            openAiApiKey: { type: 'string', description: 'The OpenAI API key to use for generating embeddings.' },
           },
-          required: ['title', 'content', 'sourceType', 'userToken'],
+          required: ['title', 'content', 'sourceType', 'userToken', 'openAiApiKey'],
         },
       },
       {
@@ -67,8 +61,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           properties: {
             documentUrl: { type: 'string', description: 'The public Google Doc URL.' },
             userToken: { type: 'string', description: 'The Supabase JWT access token for the user.' },
+            openAiApiKey: { type: 'string', description: 'The OpenAI API key to use for generating embeddings.' },
           },
-          required: ['documentUrl', 'userToken'],
+          required: ['documentUrl', 'userToken', 'openAiApiKey'],
         },
       },
     ],
@@ -82,8 +77,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     throw new Error('userToken is required for all operations.');
   }
 
-  // Initialize Supabase Client with the user's JWT
-  // This ensures Row Level Security (RLS) is applied automatically
+  if (typeof args.openAiApiKey !== 'string') {
+    throw new Error('openAiApiKey is required for AI vector operations.');
+  }
+
   const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     global: {
       headers: {
@@ -92,15 +89,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     },
   });
 
+  const openai = new OpenAI({ apiKey: args.openAiApiKey });
+
   if (name === 'search_brain') {
-    // In a real implementation, you would convert args.query to an embedding here using OpenAI or similar.
-    // For this boilerplate, we'll assume a direct text search using Postgres Full-Text Search
-    // or a placeholder for the vector search function `match_document_chunks`
-    
-    const { data, error } = await supabase
-      .from('documents')
-      .select('*')
-      .textSearch('title', args.query as string, { type: 'websearch' });
+    const embedRes = await openai.embeddings.create({
+      model: 'text-embedding-3-small',
+      input: args.query as string,
+    });
+    const query_embedding = embedRes.data[0].embedding;
+
+    const { data, error } = await supabase.rpc('match_document_chunks', {
+      query_embedding,
+      match_count: 5,
+    });
 
     if (error) {
       throw new Error(`Search failed: ${error.message}`);
@@ -119,7 +120,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       throw new Error(`Unauthorized: ${userAuthError?.message || 'User not found'}`);
     }
 
-    // First insert the document
     const { data: docData, error: docError } = await supabase
       .from('documents')
       .insert({
@@ -134,13 +134,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       throw new Error(`Failed to save document: ${docError.message}`);
     }
 
-    // Then insert the chunk (in a real app, you'd generate the embedding here first)
+    const embedRes = await openai.embeddings.create({
+      model: 'text-embedding-3-small',
+      input: content as string,
+    });
+    const embedding = embedRes.data[0].embedding;
+
     const { error: chunkError } = await supabase
       .from('document_chunks')
       .insert({
         document_id: docData.id,
         user_id: user.id,
         content,
+        embedding,
         chunk_index: 0,
       });
 
@@ -161,18 +167,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       throw new Error(`Unauthorized: ${userAuthError?.message || 'User not found'}`);
     }
 
-    if (!openaiApiKey) {
-      throw new Error('OPENAI_API_KEY is not configured on the server.');
-    }
-
-    // 1. Extract Doc ID and Fetch Text
     const docIdMatch = (documentUrl as string).match(/\/document\/d\/([a-zA-Z0-9-_]+)/);
     if (!docIdMatch) {
       throw new Error('Invalid Google Doc URL.');
     }
     const docId = docIdMatch[1];
     
-    // Attempt to fetch public text
     const exportUrl = `https://docs.google.com/document/d/${docId}/export?format=txt`;
     const response = await fetch(exportUrl);
     if (!response.ok) {
@@ -180,7 +180,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
     const text = await response.text();
 
-    // 2. Insert the parent document
     const { data: docData, error: docError } = await supabase
       .from('documents')
       .insert({
@@ -196,7 +195,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       throw new Error(`Failed to save document record: ${docError.message}`);
     }
 
-    // 3. Chunk the text (simple paragraph-based chunking ~1000 characters)
     const paragraphs = text.split(/\n\s*\n/);
     const chunks: string[] = [];
     let currentChunk = '';
@@ -212,7 +210,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       chunks.push(currentChunk.trim());
     }
 
-    // 4. Generate Embeddings & Insert
     let insertedChunks = 0;
     for (let i = 0; i < chunks.length; i++) {
       const chunkText = chunks[i];
